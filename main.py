@@ -1,7 +1,9 @@
+import asyncio
 import os
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from dotenv import load_dotenv
 import caldav
 from telegram import Update
@@ -11,12 +13,13 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
-    JobQueue,
-    PicklePersistence,
 )
 from openai import OpenAI
 from zoneinfo import ZoneInfo
 from google import genai
+from icalendar import Alarm, Calendar, Event
+
+from reminders import Reminder, ReminderScheduler
 
 TZ = ZoneInfo("Europe/Istanbul")
 
@@ -46,6 +49,7 @@ def get_calendar():
         url=RADICALE_URL,
         username=RADICALE_USER,
         password=RADICALE_PASS,
+        timeout=15,
     )
     principal = client.principal()
     calendars = principal.calendars()
@@ -58,6 +62,46 @@ def get_calendar():
 
     logger.info("Reminder calendar not found, creating new one.")
     return principal.make_calendar(name="reminder")
+
+
+reminder_scheduler = ReminderScheduler(get_calendar, TZ, TELEGRAM_CHAT_ID)
+
+
+def save_calendar_event(title, description, start, all_day):
+    uid = str(uuid4())
+    calendar = Calendar()
+    calendar.add("prodid", "-//TelegramBot//TR")
+    calendar.add("version", "2.0")
+    event = Event()
+    event.add("uid", uid)
+    event.add("dtstamp", datetime.now(timezone.utc))
+    event.add("summary", title)
+    event.add("description", description)
+    if all_day:
+        event.add("dtstart", start.date())
+        event.add("dtend", (start + timedelta(days=1)).date())
+    else:
+        event.add("dtstart", start.astimezone(timezone.utc))
+        event.add("dtend", (start + timedelta(hours=1)).astimezone(timezone.utc))
+        alarm = Alarm()
+        alarm.add("action", "DISPLAY")
+        alarm.add("description", title)
+        alarm.add("trigger", timedelta(0))
+        event.add_component(alarm)
+    calendar.add_component(event)
+    get_calendar().save_event(calendar.to_ical().decode("utf-8"))
+    return uid
+
+
+async def add_calendar_event(context, title, description, start, all_day):
+    async with reminder_scheduler.lock:
+        uid = await asyncio.to_thread(
+            save_calendar_event, title, description, start, all_day
+        )
+        if not all_day and start > datetime.now(TZ):
+            reminder_scheduler.schedule(
+                context.job_queue, Reminder(uid, title, start)
+            )
 
 
 def _clean_json(text: str):
@@ -134,18 +178,8 @@ def delete_event_by_title(title: str):
         summary = comp.get("SUMMARY", "")
         if title.lower() in summary.lower():
             ev.delete()
-            deleted.append(summary)
+            deleted.append((str(comp.get("UID", "")), str(summary)))
     return deleted
-
-
-async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    job = context.job
-    title = job.data["title"]
-    chat_id = job.data["chat_id"]
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"⏰ Hatırlatma: {title}",
-    )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -158,9 +192,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = f"voice_{update.message.message_id}.ogg"
         await voice_file.download_to_drive(file_path)
 
-        uploaded_file = gemini_client.files.upload(file=file_path)
+        uploaded_file = await asyncio.to_thread(gemini_client.files.upload, file=file_path)
 
-        response = gemini_client.models.generate_content(
+        response = await asyncio.to_thread(
+            gemini_client.models.generate_content,
             model="gemini-3.8-flash",
             contents=[
                 uploaded_file,
@@ -173,7 +208,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise Exception("Transkript alınamadı.")
 
         try:
-            gemini_client.files.delete(name=uploaded_file.name)
+            await asyncio.to_thread(gemini_client.files.delete, name=uploaded_file.name)
         except Exception:
             pass
 
@@ -198,7 +233,7 @@ async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, u
         return
 
     try:
-        parsed = parse_with_openrouter(user_message)
+        parsed = await asyncio.to_thread(parse_with_openrouter, user_message)
         action = parsed.get("action")
 
         if action == "add_event":
@@ -211,46 +246,14 @@ async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, u
                 await update.message.reply_text("Tarih/saat anlayamadım. Tekrar yazar mısın?")
                 return
 
-            cal = get_calendar()
-
             if all_day:
-                date_clean = dt_str.split(" ")[0].replace("-", "")
-                next_day = (datetime.strptime(dt_str.split(" ")[0], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y%m%d")
-                event_ical = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//TelegramBot//TR
-BEGIN:VEVENT
-SUMMARY:{title}
-DESCRIPTION:{description}
-DTSTART;VALUE=DATE:{date_clean}
-DTEND;VALUE=DATE:{next_day}
-END:VEVENT
-END:VCALENDAR"""
-                cal.save_event(event_ical)
-                await update.message.reply_text(f"✅ Tamam, {dt_str.split(' ')[0]} için '{title}' tüm gün etkinliği oluşturuldu.")
+                event_date = datetime.strptime(dt_str.split(" ")[0], "%Y-%m-%d").replace(tzinfo=TZ)
             else:
                 event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
-                event_ical = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//TelegramBot//TR
-BEGIN:VEVENT
-SUMMARY:{title}
-DESCRIPTION:{description}
-DTSTART:{event_date.strftime('%Y%m%dT%H%M%S')}
-DTEND:{(event_date + timedelta(hours=1)).strftime('%Y%m%dT%H%M%S')}
-BEGIN:VALARM
-ACTION:DISPLAY
-DESCRIPTION:{title}
-TRIGGER:-PT0M
-END:VALARM
-END:VEVENT
-END:VCALENDAR"""
-                cal.save_event(event_ical)
-                context.job_queue.run_once(
-                    send_reminder,
-                    when=event_date,
-                    data={"title": title, "chat_id": chat_id},
-                )
+            await add_calendar_event(context, title, description, event_date, all_day)
+            if all_day:
+                await update.message.reply_text(f"✅ Tamam, {dt_str.split(' ')[0]} için '{title}' tüm gün etkinliği oluşturuldu.")
+            else:
                 await update.message.reply_text(f"✅ Tamam, {dt_str} için '{title}' hatırlatıcısı oluşturuldu.")
 
         elif action == "add_multi_event":
@@ -263,50 +266,12 @@ END:VCALENDAR"""
                 await update.message.reply_text("Hangi günler olduğunu anlayamadım.")
                 return
 
-            cal = get_calendar()
             added = []
-
             for d in dates:
-                if all_day:
-                    date_clean = d.replace("-", "")
-                    next_day = (datetime.strptime(d, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y%m%d")
-                    event_ical = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//TelegramBot//TR
-BEGIN:VEVENT
-SUMMARY:{title}
-DESCRIPTION:{description}
-DTSTART;VALUE=DATE:{date_clean}
-DTEND;VALUE=DATE:{next_day}
-END:VEVENT
-END:VCALENDAR"""
-                    cal.save_event(event_ical)
-                    added.append(d)
-                else:
-                    dt_str = f"{d} 09:00"
-                    event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
-                    event_ical = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//TelegramBot//TR
-BEGIN:VEVENT
-SUMMARY:{title}
-DESCRIPTION:{description}
-DTSTART:{event_date.strftime('%Y%m%dT%H%M%S')}
-DTEND:{(event_date + timedelta(hours=1)).strftime('%Y%m%dT%H%M%S')}
-BEGIN:VALARM
-ACTION:DISPLAY
-DESCRIPTION:{title}
-TRIGGER:-PT0M
-END:VALARM
-END:VEVENT
-END:VCALENDAR"""
-                    cal.save_event(event_ical)
-                    context.job_queue.run_once(
-                        send_reminder,
-                        when=event_date,
-                        data={"title": title, "chat_id": chat_id},
-                    )
-                    added.append(dt_str)
+                dt_str = f"{d} 09:00"
+                event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+                await add_calendar_event(context, title, description, event_date, all_day)
+                added.append(d if all_day else dt_str)
 
             await update.message.reply_text(
                 f"✅ Tamam, şu günler için '{title}' etkinliği eklendi:\n" +
@@ -318,22 +283,27 @@ END:VCALENDAR"""
             if not title:
                 await update.message.reply_text("Hangi etkinliği sileceğimi anlayamadım.")
                 return
-            deleted = delete_event_by_title(title)
+            async with reminder_scheduler.lock:
+                deleted = await asyncio.to_thread(delete_event_by_title, title)
+                for uid, _ in deleted:
+                    reminder_scheduler.cancel(uid)
             if deleted:
                 await update.message.reply_text(
-                    "🗑️ Silindi:\n" + "\n".join(f"• {d}" for d in deleted)
+                    "🗑️ Silindi:\n" + "\n".join(f"• {title}" for _, title in deleted)
                 )
             else:
                 await update.message.reply_text(f"'{title}' bulunamadı.")
 
         elif action == "list_events":
             days = parsed.get("days_ahead", 7)
-            cal = get_calendar()
+            cal = await asyncio.to_thread(get_calendar)
 
             start_date = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = start_date + timedelta(days=days + 1)
 
-            events = cal.search(start=start_date, end=end_date, event=True, expand=True)
+            events = await asyncio.to_thread(
+                cal.search, start=start_date, end=end_date, event=True, expand=True
+            )
 
             if not events:
                 await update.message.reply_text(f"Önümüzdeki {days} günde etkinlik yok.")
@@ -353,6 +323,8 @@ END:VCALENDAR"""
                 description = comp.get("DESCRIPTION", "")
                 dtstart = comp.get("DTSTART").dt
                 if isinstance(dtstart, datetime):
+                    if dtstart.tzinfo is not None:
+                        dtstart = dtstart.astimezone(TZ)
                     date_str = dtstart.strftime("%d.%m.%Y %H:%M")
                 else:
                     date_str = dtstart.strftime("%d.%m.%Y")
@@ -383,11 +355,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    persistence = PicklePersistence(filepath="bot_persistence.pkl")
     app = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
-        .persistence(persistence)
+        .post_init(reminder_scheduler.initialize)
         .build()
     )
 

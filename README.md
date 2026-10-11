@@ -1,37 +1,38 @@
 # Reminder Bot
 
-Telegram üzerinden Türkçe metin ve sesli mesajlarla etkinlik oluşturmayı, listelemeyi ve silmeyi sağlayan kişisel takvim botu. Etkinlikler CalDAV sunucusunda saklanır; saatli etkinlikler için Telegram bildirimi planlanır.
+A personal Telegram bot that creates, lists, and deletes CalDAV calendar events from Turkish text and voice messages. Timed events produce Telegram reminders at their start time.
 
-## Özellikler
+## Features
 
-- Doğal dille tek gün veya birden fazla gün için etkinlik oluşturma.
-- Saat belirtilmeyen etkinlikleri tüm gün olarak kaydetme.
-- Etkinliklere açıklama ve not ekleme.
-- Başlık üzerinden etkinlik silme ve yaklaşan etkinlikleri listeleme.
-- Gemini ile sesli mesajları Türkçe metne çevirme.
-- Metin ve sesli mesaj işlemlerini tek bir Telegram sohbetiyle sınırlama.
+- Create single-day, multi-day, and all-day events using natural language.
+- Add descriptions and notes to events.
+- List upcoming events and delete events by title.
+- Transcribe Turkish voice messages with Gemini and interpret messages with OpenRouter.
+- Restrict text and voice processing to one configured Telegram chat.
+- Restore future reminders from CalDAV after a restart or deployment.
+- Cancel pending reminders when events are deleted and verify events before delivery.
 
-## Nasıl çalışır?
+## How it works
 
-1. Bot, Telegram mesajlarını polling yöntemiyle alır.
-2. Sesli mesaj varsa kayıt Gemini'ye yüklenerek metne çevrilir.
-3. OpenRouter metni analiz eder ve yapılacak işlemi JSON olarak döndürür. İlk model başarısız olursa `openrouter/free` denenir.
-4. Etkinlikler CalDAV üzerinde, adında `reminder` geçen ilk takvime kaydedilir. Böyle bir takvim yoksa `reminder` adında oluşturulur.
-5. Saatli etkinlikler için `JobQueue` ile etkinlik başlangıcında Telegram bildirimi gönderilir.
+1. Telegram updates are received through polling.
+2. Voice messages are uploaded to Gemini and transcribed into Turkish text.
+3. OpenRouter returns a JSON action. If the first model fails, the bot tries `openrouter/free`.
+4. Events are stored in the first CalDAV calendar whose display name contains `reminder`. If none exists, the bot creates a calendar named `reminder`.
+5. Timed events are scheduled through Telegram's `JobQueue`. CalDAV is the source of truth: reminders are restored at startup and synchronized every 60 seconds.
 
-Tarih ve saatler uygulamada `Europe/Istanbul` saat dilimine göre yorumlanır.
+The bot interprets dates in `Europe/Istanbul`. New timed events are stored in UTC; older records without a timezone are interpreted as Istanbul local time. Blocking AI and calendar calls run in worker threads so they do not block the bot's event loop.
 
-## Gereksinimler
+## Requirements
 
-- `zoneinfo` modülünü destekleyen Python kurulumu (Python 3.9 ve sonrası). Kurulan paketler daha yeni bir Python sürümü gerektirebilir.
-- Telegram bot token'ı ve kullanılacak sohbetin sayısal kimliği.
-- Erişilebilir bir CalDAV sunucusu (örneğin Radicale) ve takvim oluşturma/yazma izni olan bir hesap.
-- OpenRouter ve Gemini API anahtarları. Mevcut kod her iki istemciyi de başlangıçta oluşturur.
-- Telegram, CalDAV, OpenRouter ve Gemini servislerine ağ erişimi.
+- A Python version supported by the installed dependencies. The application uses `asyncio.to_thread`, requiring Python 3.9 or newer; current package versions may require a newer version.
+- A Telegram bot token and the numeric ID of the permitted chat.
+- A reachable CalDAV server, such as Radicale, and an account with permission to create calendars and write events.
+- OpenRouter and Gemini API keys. Both clients are initialized at startup, even when only text messages are used.
+- Network access to Telegram, CalDAV, OpenRouter, and Gemini.
 
-## Kurulum
+## Installation
 
-Terminalde `main.py` ve `requirements.txt` dosyalarının bulunduğu dizine geçin.
+Open a terminal in the directory containing `main.py` and `requirements.txt`.
 
 ### Windows / PowerShell
 
@@ -49,11 +50,11 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt`, CalDAV, Telegram, ortam değişkenleri, iCalendar, OpenRouter ve Gemini işlemleri için gereken Python paketlerini listeler. `python-telegram-bot[job-queue]`, bildirim zamanlama desteğini de kurar. Paket sürümleri şu anda sabitlenmemiştir.
+`requirements.txt` lists the Python packages needed for CalDAV, Telegram, environment variables, iCalendar serialization, OpenRouter, and Gemini. The `python-telegram-bot[job-queue]` extra installs scheduling support. Dependency versions are not currently pinned.
 
-## Yapılandırma
+## Configuration
 
-Proje dizininde `.env` adlı bir dosya oluşturun ve örnek değerleri kendi bilgilerinizle değiştirin:
+Create a `.env` file in the project directory, replacing these placeholders with your own values. On Dokploy, set the same variables in the application's Environment settings.
 
 ```dotenv
 RADICALE_URL=https://calendar.example.com
@@ -65,83 +66,110 @@ OPENROUTER_API_KEY=your_openrouter_api_key
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
-| Değişken | Açıklama |
+| Variable | Description |
 | --- | --- |
-| `RADICALE_URL` | CalDAV sunucusunun adresi. Kodda kişisel bir varsayılan bulunduğundan kendi adresinizi açıkça tanımlayın. |
-| `RADICALE_USER` | CalDAV kullanıcı adı. Kodda kişisel bir varsayılan bulunduğundan kendi hesabınızı tanımlayın. |
-| `RADICALE_PASS` | CalDAV hesabının parolası. |
-| `TELEGRAM_TOKEN` | Telegram'da BotFather üzerinden oluşturulan botun token'ı. |
-| `TELEGRAM_CHAT_ID` | Botun işlemlerine izin verilen sohbetin sayısal kimliği; grup kimlikleri negatif olabilir. |
-| `OPENROUTER_API_KEY` | Mesajların anlamlandırılması için kullanılan API anahtarı. |
-| `GEMINI_API_KEY` | Sesli mesajların metne çevrilmesi için kullanılan API anahtarı. |
+| `RADICALE_URL` | CalDAV server URL. Set this explicitly because the code contains a personal default. |
+| `RADICALE_USER` | CalDAV username. Set this explicitly because the code contains a personal default. |
+| `RADICALE_PASS` | CalDAV account password. |
+| `TELEGRAM_TOKEN` | Bot token obtained through Telegram's BotFather. |
+| `TELEGRAM_CHAT_ID` | Numeric ID of the permitted chat. Group IDs may be negative. |
+| `OPENROUTER_API_KEY` | API key used to interpret messages. |
+| `GEMINI_API_KEY` | API key used to transcribe voice messages. |
 
-`TELEGRAM_CHAT_ID` başlangıçta tam sayıya çevrilir; boş veya sayısal olmayan bir değer uygulamanın başlamasını engeller. `.env`, mevcut `.gitignore` tarafından dışlanır; token ve parolaları kaynak koduna veya commit'lere eklemeyin.
+`TELEGRAM_CHAT_ID` is converted to an integer at startup. A missing or nonnumeric value prevents startup. `.env` is excluded by `.gitignore`; never commit credentials.
 
-## Çalıştırma ve kullanım
+## Running and usage
 
-Sanal ortam etkin durumdayken:
+With the virtual environment active, run:
 
 ```bash
 python main.py
 ```
 
-Terminalde `Bot started.` mesajı göründükten sonra yapılandırılmış Telegram sohbetinde bota `/start` gönderin. Ardından metin veya sesli mesaj kullanabilirsiniz:
+Send `/start` to the bot from the configured Telegram chat. The interface and language prompts are Turkish. For example:
 
-| Amaç | Örnek mesaj |
+| Purpose | Example message |
 | --- | --- |
-| Saatli etkinlik | Yarın saat 15:00'a sinema hatırlatıcısı oluştur. |
-| Tüm gün etkinlik | Yarın kitap fuarını takvime ekle. |
-| Birden fazla gün | 24 ve 25'inde toplantı var, takvime ekle. |
-| Açıklama ekleme | Yarın saat 14:00'a toplantı ekle, not: sunumu hazırla. |
-| Listeleme | Yaklaşan etkinlikleri göster. |
-| Bugünü listeleme | Bugünkü etkinlikleri göster. |
-| Silme | Sinema etkinliğini sil. |
+| Timed event | `Yarın saat 15:00'a sinema hatırlatıcısı oluştur.` |
+| All-day event | `Yarın kitap fuarını takvime ekle.` |
+| Multiple days | `24 ve 25'inde toplantı var, takvime ekle.` |
+| Description | `Yarın saat 14:00'a toplantı ekle, not: sunumu hazırla.` |
+| Upcoming events | `Yaklaşan etkinlikleri göster.` |
+| Today's events | `Bugünkü etkinlikleri göster.` |
+| Delete an event | `Sinema etkinliğini sil.` |
 
-Botu durdurmak için terminalde `Ctrl+C` kullanın. Bildirimlerin gönderilebilmesi için bot çalışır durumda olmalıdır. Mesaj yorumlama AI çıktısına bağlı olduğundan oluşturma yanıtındaki tarih ve başlığı kontrol edin.
+Voice messages follow the same flow after transcription. Check the date and title in the confirmation because interpretation depends on AI output. Stop the process with `Ctrl+C`.
 
-## Proje yapısı
+## Reminder reliability and deployment
+
+- Future, nonrecurring timed events with a `VALARM` are restored from the reminder calendar at startup. Existing bot-created events are supported; no migration is required.
+- Each reminder is tracked by the event's `UID`, preventing duplicate scheduling within one bot process.
+- The calendar is synchronized every 60 seconds. Removed or changed events cancel or replace their pending jobs. Events deleted through the bot cancel their jobs immediately after successful deletion.
+- Before sending, the bot looks up the event again. Deleted, cancelled, or rescheduled events do not produce the old reminder.
+- If calendar verification or Telegram delivery fails, the bot retries up to three times at 30-second intervals. A failed calendar synchronization preserves existing jobs and is retried on the next cycle.
+- Reminder recovery uses CalDAV, so no local persistence file or Dokploy volume is needed for scheduling.
+- Run only one bot instance per token. Multiple instances can conflict over Telegram polling and send duplicate reminders.
+- Events whose start time passed while the bot was offline are not replayed. A Telegram timeout after a message was accepted can also cause a retry to duplicate delivery; delivery is not guaranteed exactly once.
+
+For Dokploy, install `requirements.txt`, use `python main.py` as the start command, and supply the environment variables above. Startup and synchronization logs include `Reminder sync: ...`.
+
+For GitHub autodeploy, enable Autodeploy, select the correct repository and branch, and use the deployment webhook URL. If the dashboard is protected by Cloudflare Access, the webhook must reach Dokploy without an interactive login. A `200` response containing a Cloudflare sign-in HTML page does not mean deployment was triggered. Any Access exception should be restricted to the exact webhook path; update it and the GitHub URL if the webhook token is regenerated.
+
+## Project structure
 
 ```text
 .
-├── main.py           # Bot, AI istemcileri, takvim işlemleri ve bildirimler
-├── requirements.txt  # Python bağımlılıkları
-├── .gitignore        # Git'e dahil edilmeyecek dosyalar
-└── README.md         # Kurulum ve kullanım bilgileri
+├── main.py                  # Telegram handlers, AI clients, and calendar operations
+├── reminders.py             # Reminder restoration, synchronization, and delivery
+├── requirements.txt         # Python dependencies
+├── tests/test_reminders.py  # Reminder regression tests
+├── .gitignore
+└── README.md
 ```
 
-`main.py` tek dosyalık bir uygulamadır. Dosyanın sonundaki `if __name__ == "__main__":` bloğu, doğrudan çalıştırıldığında `main()` fonksiyonunu çağırır.
+`main.py` is the script entry point. Its `if __name__ == "__main__":` block starts the bot.
 
-## Mevcut sınırlamalar
+## Known limitations
 
-- Tüm gün etkinlikler takvime kaydedilir ancak Telegram bildirimi planlanmaz.
-- Saatli etkinlikler bir saat sürer. Birden fazla gün için saatli etkinlik oluşturulurken her günün saati kodda `09:00` olarak belirlenir.
-- `PicklePersistence` kullanılsa da zamanlanmış `JobQueue` bildirimleri yeniden başlatmada geri yüklenmez. Takvim kayıtları CalDAV'da kalır; uygulama başlangıçta bunlardan bildirim oluşturmaz.
-- Etkinlik silme, bugünden bir yıl önce ile bir yıl sonrası arasında başlıkta geçen metne göre eşleşen tüm kayıtları siler. Silme onayı istenmez ve önceden planlanmış Telegram bildirimi iptal edilmez.
-- “Yarın” listelemesinin arama aralığı bugünün başlangıcından itibaren iki gündür; bugünkü kayıtlar da sonuçlarda görünebilir.
-- Saatli iCalendar kayıtları `TZID` veya UTC işareti olmadan yazılır. Takvim istemcisindeki görüntüleme saati istemci/sunucu ayarlarına bağlı olabilir.
-- Metin ve ses işleyicileri sohbet kimliğini kontrol eder; `/start` komutu bu kontrolü yapmaz.
-- Model adları `main.py` içinde sabittir. Servislerdeki model erişimi değişirse kodun güncellenmesi gerekebilir.
+- All-day events are stored without Telegram reminders.
+- Timed events last one hour. Multi-day timed events currently use `09:00` for each day rather than preserving a requested time.
+- Title-based deletion removes all matching events within one year before and after the current date, without asking for confirmation.
+- The search for tomorrow's events currently includes today as well.
+- Recurring events are not restored by the reminder scheduler.
+- `/start` does not apply the chat restriction used by text and voice handlers.
+- Model identifiers are hardcoded in `main.py` and may need updating if provider availability changes.
 
-## Veri işleme
+## Data handling
 
-Metin mesajları yorumlanmak üzere OpenRouter'a gönderilir. Sesli mesajlar önce yerel bir `.ogg` dosyasına indirilir, ardından Gemini'ye yüklenir; transkript OpenRouter'a gönderilir. Başarılı ses işleme sonrasında yerel dosya silinir ve Gemini dosyasını silme işlemi denenir. Hata durumlarında dosyalar kalabilir.
+Text messages are sent to OpenRouter. Voice messages are downloaded to a local `.ogg` file and uploaded to Gemini; the resulting transcript is sent to OpenRouter. After successful transcription, the local file is deleted and Gemini file deletion is attempted. Errors may leave files behind.
 
-Etkinlik başlıkları ve açıklamaları CalDAV sunucusunda saklanır. Uygulama çalışırken `bot_persistence.pkl` dosyası oluşturulabilir; bu dosya ve geçici ses kayıtları mevcut `.gitignore` içinde ayrıca dışlanmamıştır. Commit öncesinde bu dosyaları kontrol edin.
+Event titles and descriptions are stored on the CalDAV server. Temporary voice files and legacy `bot_persistence.pkl` files are not explicitly excluded by `.gitignore`; inspect untracked files before committing.
 
-## Sorun giderme
+## Troubleshooting
 
-| Belirti | Kontrol |
+| Symptom | Check |
 | --- | --- |
-| Başlangıçta `TELEGRAM_CHAT_ID` hatası | `.env` içindeki değerin tanımlı ve tam sayı olduğunu kontrol edin. |
-| `ZoneInfoNotFoundError` | Ortamda saat dilimi verisi yoksa `python -m pip install tzdata` ile kurun. Özellikle Windows'ta gerekebilir. |
-| Bot mesajlara yanıt vermiyor | Token'ı, `TELEGRAM_CHAT_ID` değerini, ağ bağlantısını ve çalışan bot sürecini kontrol edin. |
-| Takvim işlemi başarısız | CalDAV adresini, hesap bilgilerini ve takvim yazma/oluşturma izinlerini kontrol edin. |
-| AI sunucuları cevap vermedi | OpenRouter anahtarını, servis erişimini, kotayı ve kodda kullanılan modellerin erişilebilirliğini kontrol edin. |
-| Sesli mesaj anlaşılamadı | Gemini anahtarını, model erişimini ve terminaldeki hata kaydını kontrol edin. |
-| Yeniden başlatmadan sonra bildirim gelmedi | Zamanlanmış bildirimlerin yeniden yüklenmemesi mevcut bir sınırlamadır. |
+| Startup error involving `TELEGRAM_CHAT_ID` | Make sure the value is present and numeric. |
+| `ZoneInfoNotFoundError` | Install timezone data with `python -m pip install tzdata`, particularly on Windows. |
+| No response to messages | Check the token, permitted chat ID, network access, and running process. |
+| Calendar operation fails | Check the CalDAV URL, credentials, and calendar creation/write permissions. |
+| AI services do not respond | Check the OpenRouter key, quota, connectivity, and model availability. |
+| Voice transcription fails | Check the Gemini key, model access, and application logs. |
+| Reminder sync fails | Check CalDAV connectivity and credentials. Existing jobs are retained and sync retries automatically. |
+| Webhook reports success but no deploy appears | Inspect its response body for a Cloudflare login page, then check Autodeploy and branch settings. |
 
-## Geliştirme ve lisans
+## Tests
 
-Depoda otomatik test paketi veya bağımlılık kilit dosyası bulunmuyor. Davranış değişikliklerini ayrı bir test botu ve takvimle; etkinlik oluşturma, listeleme, silme ve bildirim akışlarını kontrol ederek doğrulayın.
+After installing the dependencies, run:
 
-Depoda bir lisans dosyası bulunmuyor; kullanım ve dağıtım koşulları ayrıca belirlenmelidir.
+```bash
+python -m unittest discover -s tests -v
+```
+
+Tests cover restart recovery, duplicate prevention, deletion, rescheduling, timezone compatibility, calendar failures, retries, event-loop responsiveness, and iCalendar serialization. They use mocked remote services and do not send Telegram messages or modify a live calendar.
+
+For deployment verification, create a future reminder, restart the bot before its due time, and confirm delivery. Create another reminder and delete it before its due time; confirm that no message is sent.
+
+## License
+
+No license file is currently included. Usage and distribution terms must be established separately.
