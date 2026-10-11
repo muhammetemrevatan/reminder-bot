@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 from caldav.lib.error import NotFoundError
-from icalendar import Calendar, Event
+from icalendar import Calendar, Event, vText
 
 from actions import InvalidAction, validate_action
 from calendar_ops import STATE_UID, apply_change, build_event, find_matches, serialize
@@ -182,6 +182,30 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     def context(self, job):
         return SimpleNamespace(job=job, job_queue=self.queue, application=self.app, bot=self.bot)
+
+    async def test_legacy_escaped_checkpoint_preserves_delivery_receipts(self):
+        last_seen = datetime.now(TZ) - timedelta(minutes=15)
+        delivered = {'uid|time|0': last_seen.timestamp()}
+        event = Event()
+        event.add('uid', STATE_UID)
+        state = json.dumps({'last_seen': last_seen.isoformat(), 'delivered': delivered})
+        event.add('X-REMINDER-BOT-STATE', vText(state).to_ical().decode())
+        self.calendar.save_event(serialize(event))
+        self.assertEqual(self.scheduler._load_state(), (last_seen, delivered))
+        self.scheduler.last_seen, self.scheduler.delivered = last_seen, delivered
+        self.scheduler._write_state()
+        self.assertEqual(self.scheduler._load_state(), (last_seen, delivered))
+
+    async def test_corrupt_checkpoint_does_not_block_future_reminders(self):
+        event = Event()
+        event.add('uid', STATE_UID)
+        event.add('X-REMINDER-BOT-STATE', 'broken checkpoint')
+        self.calendar.save_event(serialize(event))
+        self.add(datetime.now(TZ) + timedelta(hours=1))
+        await self.scheduler.initialize(self.app)
+        self.assertEqual(len(self.scheduler.jobs), 1)
+        self.bot.send_message.assert_not_awaited()
+        self.assertIsNotNone(self.scheduler._load_state())
 
     async def test_restart_does_not_repeat_sent_early_alarm(self):
         self.add(datetime.now(TZ) + timedelta(minutes=5), minutes=[10, 0])

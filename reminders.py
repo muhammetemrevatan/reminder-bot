@@ -1,7 +1,10 @@
 import asyncio
+import base64
+import binascii
 import copy
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -150,11 +153,27 @@ class ReminderScheduler:
         raw = event.icalendar_component.get("X-REMINDER-BOT-STATE")
         if raw is None:
             return None
-        state = json.loads(str(raw))
-        last_seen = datetime.fromisoformat(state["last_seen"])
-        if last_seen.tzinfo is None or not isinstance(state.get("delivered"), dict):
-            raise ValueError("Invalid reminder checkpoint")
-        return last_seen, state["delivered"]
+        try:
+            value = str(raw)
+            if value.startswith("base64:"):
+                value = base64.b64decode(value[7:], validate=True).decode("utf-8")
+            try:
+                state = json.loads(value)
+            except json.JSONDecodeError:
+                # Older X-properties may be returned with iCalendar TEXT escaping.
+                value = re.sub(r"\\([\\,;nN])", lambda match: "\n" if match[1] in ("n", "N") else match[1], value)
+                state = json.loads(value)
+            last_seen = datetime.fromisoformat(state["last_seen"])
+            delivered = state["delivered"]
+            if last_seen.tzinfo is None or not isinstance(delivered, dict) or any(
+                not isinstance(key, str) or type(stamp) not in (int, float)
+                for key, stamp in delivered.items()
+            ):
+                raise ValueError("Invalid reminder checkpoint")
+        except (ValueError, TypeError, KeyError, binascii.Error):
+            logger.warning("Invalid reminder checkpoint; restoring future reminders without historical replay")
+            return None
+        return last_seen, delivered
 
     def _write_state(self):
         event = Event()
@@ -165,9 +184,10 @@ class ReminderScheduler:
         event.add("summary", "Reminder Bot delivery checkpoint")
         event.add("transp", "TRANSPARENT")
         event.add("class", "PRIVATE")
-        event.add("X-REMINDER-BOT-STATE", json.dumps({
+        state = json.dumps({
             "last_seen": self.last_seen.isoformat(), "delivered": self.delivered,
-        }, separators=(",", ":")))
+        }, separators=(",", ":"))
+        event.add("X-REMINDER-BOT-STATE", "base64:" + base64.b64encode(state.encode("utf-8")).decode("ascii"))
         self.calendar_factory().save_event(serialize(event))
 
     async def _checkpoint(self, now):
