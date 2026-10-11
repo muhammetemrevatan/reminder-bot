@@ -16,6 +16,8 @@ from telegram.ext import (
 )
 from openai import OpenAI
 from zoneinfo import ZoneInfo
+from google import genai
+from google.genai import types
 
 TZ = ZoneInfo("Europe/Istanbul")
 
@@ -27,6 +29,7 @@ RADICALE_PASS = os.getenv("RADICALE_PASS")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,6 +38,8 @@ openrouter_client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
 )
+
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def get_calendar():
@@ -73,6 +78,7 @@ Sen bir takvim asistanısın. Kullanıcının mesajını analiz et ve SADECE şu
 {{
   "action": "add_event" | "add_multi_event" | "delete_event" | "list_events" | "chat",
   "title": "etkinlik başlığı (varsa)",
+  "description": "etkinlik açıklaması (varsa)",
   "datetime": "YYYY-MM-DD HH:MM (tek etkinlik için, saat varsa)",
   "dates": ["YYYY-MM-DD", "YYYY-MM-DD"] (çoklu gün için),
   "all_day": true | false,
@@ -87,6 +93,7 @@ Sen bir takvim asistanısın. Kullanıcının mesajını analiz et ve SADECE şu
 4. "Şu an 00:00" gibi varsayım yapma. Saat yoksa all_day true.
 5. Sadece etkinlik ekleme/silme/listeleme dışında bir şey sorulursa action: "chat" kullan.
 6. Kısa cevap ver, gereksiz soru sorma.
+7. Kullanıcı "açıklama", "not", "detay" gibi ifadeler kullanırsa bunları description alanına koy.
 
 Kullanıcının mesajı: "{message}"
 """
@@ -152,16 +159,26 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = f"voice_{update.message.message_id}.ogg"
         await voice_file.download_to_drive(file_path)
 
-        with open(file_path, "rb") as audio_file:
-            transcript = openrouter_client.audio.transcriptions.create(
-                model="openai/whisper-large-v3",
-                file=audio_file,
-            )
+        uploaded_file = gemini_client.files.upload(file=file_path)
+
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-transcribe",
+            contents=[
+                uploaded_file,
+                "Bu ses kaydını Türkçe olarak metne çevir. Sadece transkripti yaz, başka bir şey ekleme."
+            ],
+        )
+        transcript = response.text.strip()
+
+        try:
+            gemini_client.files.delete(name=uploaded_file.name)
+        except Exception:
+            pass
 
         os.remove(file_path)
 
-        update.message.text = transcript.text
-        await update.message.reply_text(f"🎤 Anladım: {transcript.text}")
+        update.message.text = transcript
+        await update.message.reply_text(f"🎤 Anladım: {transcript}")
         await handle_message(update, context)
 
     except Exception as e:
@@ -182,6 +199,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if action == "add_event":
             title = parsed.get("title", "Hatırlatıcı")
+            description = parsed.get("description", "")
             dt_str = parsed.get("datetime")
             all_day = parsed.get("all_day", False)
 
@@ -199,6 +217,7 @@ VERSION:2.0
 PRODID:-//TelegramBot//TR
 BEGIN:VEVENT
 SUMMARY:{title}
+DESCRIPTION:{description}
 DTSTART;VALUE=DATE:{date_clean}
 DTEND;VALUE=DATE:{next_day}
 END:VEVENT
@@ -212,6 +231,7 @@ VERSION:2.0
 PRODID:-//TelegramBot//TR
 BEGIN:VEVENT
 SUMMARY:{title}
+DESCRIPTION:{description}
 DTSTART:{event_date.strftime('%Y%m%dT%H%M%S')}
 DTEND:{(event_date + timedelta(hours=1)).strftime('%Y%m%dT%H%M%S')}
 BEGIN:VALARM
@@ -231,6 +251,7 @@ END:VCALENDAR"""
 
         elif action == "add_multi_event":
             title = parsed.get("title", "Etkinlik")
+            description = parsed.get("description", "")
             dates = parsed.get("dates", [])
             all_day = parsed.get("all_day", True)
 
@@ -250,6 +271,7 @@ VERSION:2.0
 PRODID:-//TelegramBot//TR
 BEGIN:VEVENT
 SUMMARY:{title}
+DESCRIPTION:{description}
 DTSTART;VALUE=DATE:{date_clean}
 DTEND;VALUE=DATE:{next_day}
 END:VEVENT
@@ -264,6 +286,7 @@ VERSION:2.0
 PRODID:-//TelegramBot//TR
 BEGIN:VEVENT
 SUMMARY:{title}
+DESCRIPTION:{description}
 DTSTART:{event_date.strftime('%Y%m%dT%H%M%S')}
 DTEND:{(event_date + timedelta(hours=1)).strftime('%Y%m%dT%H%M%S')}
 BEGIN:VALARM
@@ -323,12 +346,15 @@ END:VCALENDAR"""
             for ev in events:
                 comp = ev.icalendar_component
                 summary = comp.get("SUMMARY", "Başlıksız")
+                description = comp.get("DESCRIPTION", "")
                 dtstart = comp.get("DTSTART").dt
                 if isinstance(dtstart, datetime):
                     date_str = dtstart.strftime("%d.%m.%Y %H:%M")
                 else:
                     date_str = dtstart.strftime("%d.%m.%Y")
                 msg += f"• {date_str} — {summary}\n"
+                if description:
+                    msg += f"  📝 {description}\n"
 
             await update.message.reply_text(msg)
 
