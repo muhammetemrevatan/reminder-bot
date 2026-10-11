@@ -71,7 +71,7 @@ def parse_with_openrouter(message: str):
 
 Sen bir takvim asistanısın. Kullanıcının mesajını analiz et ve SADECE şu JSON formatında cevap ver:
 {{
-  "action": "add_event" | "add_multi_event" | "list_events" | "chat",
+  "action": "add_event" | "add_multi_event" | "delete_event" | "list_events" | "chat",
   "title": "etkinlik başlığı (varsa)",
   "datetime": "YYYY-MM-DD HH:MM (tek etkinlik için, saat varsa)",
   "dates": ["YYYY-MM-DD", "YYYY-MM-DD"] (çoklu gün için),
@@ -85,7 +85,7 @@ Sen bir takvim asistanısın. Kullanıcının mesajını analiz et ve SADECE şu
 2. "24 ve 25'inde", "2 gün boyunca", "3 gün", "hafta sonu" gibi ifadelerde action: "add_multi_event" kullan ve dates listesine her günü ayrı ayrı ekle.
 3. Saat belirtilmemişse all_day: true yap.
 4. "Şu an 00:00" gibi varsayım yapma. Saat yoksa all_day true.
-5. Sadece etkinlik ekleme/listeleme dışında bir şey sorulursa action: "chat" kullan.
+5. Sadece etkinlik ekleme/silme/listeleme dışında bir şey sorulursa action: "chat" kullan.
 6. Kısa cevap ver, gereksiz soru sorma.
 
 Kullanıcının mesajı: "{message}"
@@ -117,6 +117,19 @@ Kullanıcının mesajı: "{message}"
     }
 
 
+def delete_event_by_title(title: str):
+    cal = get_calendar()
+    events = cal.search(event=True, expand=True)
+    deleted = []
+    for ev in events:
+        comp = ev.icalendar_component
+        summary = comp.get("SUMMARY", "")
+        if title.lower() in summary.lower():
+            ev.delete()
+            deleted.append(summary)
+    return deleted
+
+
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     title = job.data["title"]
@@ -125,6 +138,33 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         chat_id=chat_id,
         text=f"⏰ Hatırlatma: {title}",
     )
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(TELEGRAM_CHAT_ID):
+        return
+
+    try:
+        voice_file = await update.message.voice.get_file()
+        file_path = f"voice_{update.message.message_id}.ogg"
+        await voice_file.download_to_drive(file_path)
+
+        with open(file_path, "rb") as audio_file:
+            transcript = openrouter_client.audio.transcriptions.create(
+                model="openai/whisper-large-v3",
+                file=audio_file,
+            )
+
+        os.remove(file_path)
+
+        update.message.text = transcript.text
+        await update.message.reply_text(f"🎤 Anladım: {transcript.text}")
+        await handle_message(update, context)
+
+    except Exception as e:
+        logger.error(f"Voice error: {e}")
+        await update.message.reply_text(f"Sesli mesajı anlayamadım: {e}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,6 +284,19 @@ END:VCALENDAR"""
                 "\n".join(f"• {d}" for d in added)
             )
 
+        elif action == "delete_event":
+            title = parsed.get("title")
+            if not title:
+                await update.message.reply_text("Hangi etkinliği sileceğimi anlayamadım.")
+                return
+            deleted = delete_event_by_title(title)
+            if deleted:
+                await update.message.reply_text(
+                    "🗑️ Silindi:\n" + "\n".join(f"• {d}" for d in deleted)
+                )
+            else:
+                await update.message.reply_text(f"'{title}' bulunamadı.")
+
         elif action == "list_events":
             days = parsed.get("days_ahead", 7)
             cal = get_calendar()
@@ -289,11 +342,11 @@ END:VCALENDAR"""
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Merhaba! 👋\n\n"
-        "Bana doğal dille yaz, anlarım:\n"
+        "Bana doğal dille yaz veya sesli mesaj gönder, anlarım:\n"
         "• 'Yarın saat 15:00'a sinema hatırlatıcısı oluştur'\n"
         "• '24 ve 25'inde Çağla ile buluşacağız, takvime ekle'\n"
-        "• 'Yaklaşan etkinlikleri göster'\n"
-        "• 'Bu hafta neler var?'"
+        "• 'Sinema etkinliğini sil'\n"
+        "• 'Yaklaşan etkinlikleri göster'"
     )
 
 
@@ -308,6 +361,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     logger.info("Bot started.")
     app.run_polling()
 
