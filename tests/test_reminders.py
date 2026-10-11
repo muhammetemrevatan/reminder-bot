@@ -98,6 +98,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         await self.scheduler.sync(self.app)
         job = self.queue.created[0]
         self.scheduler.cancel("test-event")
+        self.calendar.event_by_uid.reset_mock()
         await self.scheduler.send(self.context(job))
         self.bot.send_message.assert_not_awaited()
         self.calendar.event_by_uid.assert_not_called()
@@ -182,7 +183,8 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         await self.scheduler.initialize(app)
         jobs = app.job_queue.jobs()
         self.assertEqual(len(jobs), 2)
-        self.assertEqual(len(app.job_queue.get_jobs_by_name("reminder:test-event")), 1)
+        key = next(iter(self.scheduler.jobs))
+        self.assertEqual(len(app.job_queue.get_jobs_by_name(f"reminder:{key}")), 1)
         for job in jobs:
             job.schedule_removal()
 
@@ -234,7 +236,11 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.calendar = Mock()
         self.scheduler = ReminderScheduler(lambda: self.calendar, TZ, 123)
         self.queue = FakeQueue()
-        self.context = SimpleNamespace(job_queue=self.queue)
+        self.context = SimpleNamespace(
+            job_queue=self.queue, user_data={},
+            application=SimpleNamespace(job_queue=self.queue, bot=SimpleNamespace(send_message=AsyncMock())),
+        )
+        self.calendar.event_by_uid.side_effect = NotFoundError()
         self.reply = AsyncMock()
         self.update = SimpleNamespace(
             effective_chat=SimpleNamespace(id=123),
@@ -243,20 +249,28 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_handler_saves_and_schedules_same_event_uid(self):
+        saved = []
+        def save(data):
+            parsed = Calendar.from_ical(data).walk("VEVENT")[0]
+            if str(parsed["UID"]) != "reminder-bot-checkpoint-v1":
+                saved.append(SimpleNamespace(icalendar_component=parsed))
+        self.calendar.save_event.side_effect = save
+        self.calendar.events.side_effect = lambda: saved
+        date = (datetime.now(TZ) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
         with (
             patch.object(self.main, "reminder_scheduler", self.scheduler),
             patch.object(self.main, "get_calendar", return_value=self.calendar),
             patch.object(self.main, "parse_with_openrouter", return_value={
                 "action": "add_event", "title": "Test", "description": "",
-                "datetime": "2030-01-01 15:00", "all_day": False,
+                "datetime": date, "all_day": False,
             }),
         ):
             await self.main.handle_user_text(self.update, self.context, "Test")
-        event = Calendar.from_ical(self.calendar.save_event.call_args.args[0]).walk("VEVENT")[0]
+        event = saved[0].icalendar_component
         self.assertEqual(self.queue.created[0].data["reminder"].uid, str(event["UID"]))
         self.reply.assert_awaited_once()
 
-    async def test_delete_handler_cancels_matching_uid(self):
+    async def test_delete_handler_offers_selection_without_deleting(self):
         event = make_event(title="Silinecek")
         event.delete = Mock()
         self.calendar.events.return_value = [event]
@@ -271,10 +285,10 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             }),
         ):
             await self.main.handle_user_text(self.update, self.context, "Sil")
-        event.delete.assert_called_once()
-        job.schedule_removal.assert_called_once()
-        self.assertEqual(self.scheduler.jobs, {})
-        self.reply.assert_awaited_once_with("🗑️ Silindi:\n• Silinecek")
+        event.delete.assert_not_called()
+        job.schedule_removal.assert_not_called()
+        self.assertEqual(self.context.user_data["pending_event"]["candidates"][0]["uid"], "test-event")
+        self.reply.assert_awaited_once()
 
     async def test_other_user_in_allowed_chat_is_ignored_by_all_handlers(self):
         self.update.effective_user.id = 456

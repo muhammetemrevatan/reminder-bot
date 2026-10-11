@@ -1,6 +1,7 @@
 caldav
 python-telegram-bot[job-queue]
 python-dotenv
-icalendar
+icalendar>=7.3,<8
 openai
 google-genai
+recurring-ical-events>=3.8,<4
