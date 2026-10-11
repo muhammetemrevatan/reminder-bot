@@ -69,13 +69,13 @@ def parse_with_openrouter(message: str):
 
     try:
         response = openrouter_client.chat.completions.create(
-            model="qwen/qwen3-coder:free",
+            model="nvidia/nemotron-3-super-120b-a12b:free",
             messages=[{"role": "user", "content": prompt}],
             timeout=5,
         )
         return _clean_json(response.choices[0].message.content.strip())
     except Exception as e:
-        logger.warning(f"Gemini (OpenRouter) failed: {e}")
+        logger.warning(f"(OpenRouter) failed: {e}")
 
     try:
         response = openrouter_client.chat.completions.create(
