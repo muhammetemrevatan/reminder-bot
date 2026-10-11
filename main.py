@@ -37,7 +37,10 @@ def get_calendar():
 
 
 def parse_with_gemini(message: str):
+    today = datetime.now().strftime("%Y-%m-%d %A")
     prompt = f"""
+    Bugünün tarihi: {today}
+    
     Kullanıcının mesajını analiz et ve şu JSON formatında cevap ver:
     {{
       "action": "add_event" | "list_events" | "chat",
