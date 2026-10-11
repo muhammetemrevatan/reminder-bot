@@ -161,28 +161,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         uploaded_file = gemini_client.files.upload(file=file_path)
 
-        interaction = gemini_client.interactions.create(
-            model="gemini-3.5-transcribe",
-            input=[
-                types.Content(
-                    parts=[
-                        types.Part(
-                            file_data=types.FileData(
-                                mime_type="audio/ogg",
-                                file_uri=uploaded_file.uri,
-                            )
-                        )
-                    ]
-                )
+        response = gemini_client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=[
+                uploaded_file,
+                "Bu ses kaydını Türkçe olarak metne çevir. Sadece transkripti yaz, başka bir şey ekleme."
             ],
-            generation_config=types.GenerationConfig(
-                transcription_config=types.TranscriptionConfig(
-                    language_codes=["tr-TR"],
-                    mode="smart",
-                )
-            ),
         )
-        transcript = interaction.output_text
+        transcript = response.text.strip()
 
         if not transcript:
             raise Exception("Transkript alınamadı.")
