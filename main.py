@@ -51,9 +51,9 @@ def _clean_json(text: str):
 
 
 def parse_with_openrouter(message: str):
-    today = datetime.now().strftime("%Y-%m-%d %A")
+    now = datetime.now().strftime("%Y-%m-%d %A %H:%M")
     prompt = f"""
-    Bugünün tarihi: {today}
+    Şu anki tarih ve saat: {now}
 
     Kullanıcının mesajını analiz et ve şu JSON formatında cevap ver:
     {{
