@@ -69,7 +69,7 @@ def parse_with_openrouter(message: str):
 
     try:
         response = openrouter_client.chat.completions.create(
-            model="google/gemini-2.0-flash-exp:free",
+            model="google/gemini-3.5-flash:free",
             messages=[{"role": "user", "content": prompt}],
             timeout=5,
         )
