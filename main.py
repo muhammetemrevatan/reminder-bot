@@ -37,11 +37,8 @@ def get_calendar():
     principal = client.principal()
     calendars = principal.calendars()
     for cal in calendars:
-        try:
-            if "reminder" in cal.name.lower():
-                return cal
-        except Exception:
-            continue
+        if "reminder" in str(cal.url).lower():
+            return cal
 
     logger.info("Reminder calendar not found, creating new one.")
     return principal.make_calendar(name="reminder")
@@ -158,7 +155,13 @@ END:VCALENDAR"""
                 await update.message.reply_text(f"Önümüzdeki {days} günde etkinlik yok.")
                 return
 
-            msg = f"Önümüzdeki {days} gün:\n\n"
+            if days == 0:
+                header = "Bugünkü etkinlikler:\n\n"
+            elif days == 1:
+                header = "Yarınki etkinlikler:\n\n"
+            else:
+                header = f"Önümüzdeki {days} günün etkinlikleri:\n\n"
+            msg = header
             for ev in events:
                 comp = ev.icalendar_component
                 summary = comp.get("SUMMARY", "Başlıksız")
