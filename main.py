@@ -146,8 +146,8 @@ END:VCALENDAR"""
             days = parsed.get("days_ahead", 7)
             cal = get_calendar()
 
-            start_date = datetime.now(TZ)
-            end_date = start_date + timedelta(days=days)
+            start_date = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + timedelta(days=days + 1)
 
             events = cal.search(start=start_date, end=end_date, event=True, expand=True)
 
