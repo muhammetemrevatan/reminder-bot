@@ -67,19 +67,29 @@ def _clean_json(text: str):
 def parse_with_openrouter(message: str):
     now = datetime.now(TZ).strftime("%Y-%m-%d %A %H:%M")
     prompt = f"""
-    Şu anki tarih ve saat: {now}
+Şu anki tarih ve saat: {now}
 
-    Kullanıcının mesajını analiz et ve şu JSON formatında cevap ver:
-    {{
-      "action": "add_event" | "list_events" | "chat",
-      "title": "etkinlik başlığı (varsa)",
-      "datetime": "YYYY-MM-DD HH:MM (varsa)",
-      "days_ahead": 0 | 1 | 7 (list_events için),
-      "reply": "kullanıcıya verilecek doğal cevap"
-    }}
+Sen bir takvim asistanısın. Kullanıcının mesajını analiz et ve SADECE şu JSON formatında cevap ver:
+{{
+  "action": "add_event" | "add_multi_event" | "list_events" | "chat",
+  "title": "etkinlik başlığı (varsa)",
+  "datetime": "YYYY-MM-DD HH:MM (tek etkinlik için, saat varsa)",
+  "dates": ["YYYY-MM-DD", "YYYY-MM-DD"] (çoklu gün için),
+  "all_day": true | false,
+  "days_ahead": 0 | 1 | 7,
+  "reply": "kullanıcıya verilecek kısa cevap"
+}}
 
-    Kullanıcının mesajı: "{message}"
-    """
+ÖNEMLİ KURALLAR:
+1. Kullanıcı bir etkinlik eklemek istiyorsa ASLA soru sorma. Direkt action'ı seç.
+2. "24 ve 25'inde", "2 gün boyunca", "3 gün", "hafta sonu" gibi ifadelerde action: "add_multi_event" kullan ve dates listesine her günü ayrı ayrı ekle.
+3. Saat belirtilmemişse all_day: true yap.
+4. "Şu an 00:00" gibi varsayım yapma. Saat yoksa all_day true.
+5. Sadece etkinlik ekleme/listeleme dışında bir şey sorulursa action: "chat" kullan.
+6. Kısa cevap ver, gereksiz soru sorma.
+
+Kullanıcının mesajı: "{message}"
+"""
 
     try:
         response = openrouter_client.chat.completions.create(
@@ -131,15 +141,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "add_event":
             title = parsed.get("title", "Hatırlatıcı")
             dt_str = parsed.get("datetime")
+            all_day = parsed.get("all_day", False)
 
             if not dt_str:
                 await update.message.reply_text("Tarih/saat anlayamadım. Tekrar yazar mısın?")
                 return
 
-            event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
             cal = get_calendar()
 
-            event_ical = f"""BEGIN:VCALENDAR
+            if all_day:
+                date_clean = dt_str.split(" ")[0].replace("-", "")
+                next_day = (datetime.strptime(dt_str.split(" ")[0], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y%m%d")
+                event_ical = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//TelegramBot//TR
+BEGIN:VEVENT
+SUMMARY:{title}
+DTSTART;VALUE=DATE:{date_clean}
+DTEND;VALUE=DATE:{next_day}
+END:VEVENT
+END:VCALENDAR"""
+                cal.save_event(event_ical)
+                await update.message.reply_text(f"✅ Tamam, {dt_str.split(' ')[0]} için '{title}' tüm gün etkinliği oluşturuldu.")
+            else:
+                event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+                event_ical = f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//TelegramBot//TR
 BEGIN:VEVENT
@@ -153,16 +179,70 @@ TRIGGER:-PT0M
 END:VALARM
 END:VEVENT
 END:VCALENDAR"""
+                cal.save_event(event_ical)
+                context.job_queue.run_once(
+                    send_reminder,
+                    when=event_date,
+                    data={"title": title, "chat_id": chat_id},
+                )
+                await update.message.reply_text(f"✅ Tamam, {dt_str} için '{title}' hatırlatıcısı oluşturuldu.")
 
-            cal.save_event(event_ical)
+        elif action == "add_multi_event":
+            title = parsed.get("title", "Etkinlik")
+            dates = parsed.get("dates", [])
+            all_day = parsed.get("all_day", True)
 
-            context.job_queue.run_once(
-                send_reminder,
-                when=event_date,
-                data={"title": title, "chat_id": chat_id},
+            if not dates:
+                await update.message.reply_text("Hangi günler olduğunu anlayamadım.")
+                return
+
+            cal = get_calendar()
+            added = []
+
+            for d in dates:
+                if all_day:
+                    date_clean = d.replace("-", "")
+                    next_day = (datetime.strptime(d, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y%m%d")
+                    event_ical = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//TelegramBot//TR
+BEGIN:VEVENT
+SUMMARY:{title}
+DTSTART;VALUE=DATE:{date_clean}
+DTEND;VALUE=DATE:{next_day}
+END:VEVENT
+END:VCALENDAR"""
+                    cal.save_event(event_ical)
+                    added.append(d)
+                else:
+                    dt_str = f"{d} 09:00"
+                    event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+                    event_ical = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//TelegramBot//TR
+BEGIN:VEVENT
+SUMMARY:{title}
+DTSTART:{event_date.strftime('%Y%m%dT%H%M%S')}
+DTEND:{(event_date + timedelta(hours=1)).strftime('%Y%m%dT%H%M%S')}
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:{title}
+TRIGGER:-PT0M
+END:VALARM
+END:VEVENT
+END:VCALENDAR"""
+                    cal.save_event(event_ical)
+                    context.job_queue.run_once(
+                        send_reminder,
+                        when=event_date,
+                        data={"title": title, "chat_id": chat_id},
+                    )
+                    added.append(dt_str)
+
+            await update.message.reply_text(
+                f"✅ Tamam, şu günler için '{title}' etkinliği eklendi:\n" +
+                "\n".join(f"• {d}" for d in added)
             )
-
-            await update.message.reply_text(f"✅ Tamam, {dt_str} için '{title}' hatırlatıcısı oluşturuldu.")
 
         elif action == "list_events":
             days = parsed.get("days_ahead", 7)
@@ -211,6 +291,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Merhaba! 👋\n\n"
         "Bana doğal dille yaz, anlarım:\n"
         "• 'Yarın saat 15:00'a sinema hatırlatıcısı oluştur'\n"
+        "• '24 ve 25'inde Çağla ile buluşacağız, takvime ekle'\n"
         "• 'Yaklaşan etkinlikleri göster'\n"
         "• 'Bu hafta neler var?'"
     )
