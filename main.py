@@ -47,7 +47,7 @@ def get_calendar():
     calendars = principal.calendars()
     for cal in calendars:
         try:
-            if "reminder" in cal.name.lower():
+            if "reminder" in cal.get_display_name().lower():
                 return cal
         except Exception:
             continue
@@ -119,7 +119,9 @@ Kullanıcının mesajı: "{message}"
 
 def delete_event_by_title(title: str):
     cal = get_calendar()
-    events = cal.search(event=True, expand=True)
+    start = datetime.now(TZ) - timedelta(days=365)
+    end = datetime.now(TZ) + timedelta(days=365)
+    events = cal.search(start=start, end=end, event=True, expand=True)
     deleted = []
     for ev in events:
         comp = ev.icalendar_component
