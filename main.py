@@ -159,17 +159,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = f"voice_{update.message.message_id}.ogg"
         await voice_file.download_to_drive(file_path)
 
-        # Gemini dosyayı yükle
         uploaded_file = gemini_client.files.upload(file=file_path)
 
-        # Transkripsiyon için interactions.create kullan
         interaction = gemini_client.interactions.create(
             model="gemini-3.5-transcribe",
             input=[
-                types.InteractionsInput(
-                    type="audio",
-                    uri=uploaded_file.uri,
-                    mime_type="audio/ogg",
+                types.Content(
+                    parts=[
+                        types.Part(
+                            file_data=types.FileData(
+                                mime_type="audio/ogg",
+                                file_uri=uploaded_file.uri,
+                            )
+                        )
+                    ]
                 )
             ],
             generation_config=types.GenerationConfig(
