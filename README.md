@@ -8,7 +8,7 @@ A personal Telegram bot that creates, lists, and deletes CalDAV calendar events 
 - Add descriptions and notes to events.
 - List upcoming events and delete events by title.
 - Transcribe Turkish voice messages with Gemini and interpret messages with OpenRouter.
-- Restrict text and voice processing to one configured Telegram chat.
+- Restrict text, voice, and `/start` processing to one configured Telegram chat and user.
 - Restore future reminders from CalDAV after a restart or deployment.
 - Cancel pending reminders when events are deleted and verify events before delivery.
 
@@ -62,6 +62,7 @@ RADICALE_USER=your_calendar_username
 RADICALE_PASS=your_calendar_password
 TELEGRAM_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=123456789
+TELEGRAM_USER_ID=123456789
 OPENROUTER_API_KEY=your_openrouter_api_key
 GEMINI_API_KEY=your_gemini_api_key
 ```
@@ -73,10 +74,13 @@ GEMINI_API_KEY=your_gemini_api_key
 | `RADICALE_PASS` | CalDAV account password. |
 | `TELEGRAM_TOKEN` | Bot token obtained through Telegram's BotFather. |
 | `TELEGRAM_CHAT_ID` | Numeric ID of the permitted chat. Group IDs may be negative. |
+| `TELEGRAM_USER_ID` | Numeric ID of the permitted user. Defaults to `TELEGRAM_CHAT_ID` for private chats; set it explicitly when using a group. |
 | `OPENROUTER_API_KEY` | API key used to interpret messages. |
 | `GEMINI_API_KEY` | API key used to transcribe voice messages. |
 
 `TELEGRAM_CHAT_ID` is converted to an integer at startup. A missing or nonnumeric value prevents startup. `.env` is excluded by `.gitignore`; never commit credentials.
+
+For personal use, use your private chat with the bot and set both Telegram IDs to your numeric user ID. Usernames and phone numbers are not valid IDs. Both the sender and chat must match; other users are silently ignored, including when they send `/start`. If using a group, set its ID as `TELEGRAM_CHAT_ID` and your own positive user ID as `TELEGRAM_USER_ID`. An unset user ID with a group chat fails closed: no sender is authorized.
 
 ## Running and usage
 
@@ -136,7 +140,6 @@ For GitHub autodeploy, enable Autodeploy, select the correct repository and bran
 - Title-based deletion removes all matching events within one year before and after the current date, without asking for confirmation.
 - The search for tomorrow's events currently includes today as well.
 - Recurring events are not restored by the reminder scheduler.
-- `/start` does not apply the chat restriction used by text and voice handlers.
 - Model identifiers are hardcoded in `main.py` and may need updating if provider availability changes.
 
 ## Data handling

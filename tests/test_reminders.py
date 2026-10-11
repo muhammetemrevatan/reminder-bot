@@ -191,7 +191,7 @@ class CalendarWriteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with patch.dict(os.environ, {
-            "TELEGRAM_CHAT_ID": "123", "OPENROUTER_API_KEY": "test",
+            "TELEGRAM_CHAT_ID": "123", "TELEGRAM_USER_ID": "123", "OPENROUTER_API_KEY": "test",
             "GEMINI_API_KEY": "test", "TELEGRAM_TOKEN": "123:TEST",
         }):
             import main
@@ -226,7 +226,7 @@ class CalendarWriteTests(unittest.TestCase):
 class HandlerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         with patch.dict(os.environ, {
-            "TELEGRAM_CHAT_ID": "123", "OPENROUTER_API_KEY": "test",
+            "TELEGRAM_CHAT_ID": "123", "TELEGRAM_USER_ID": "123", "OPENROUTER_API_KEY": "test",
             "GEMINI_API_KEY": "test", "TELEGRAM_TOKEN": "123:TEST",
         }):
             import main
@@ -238,6 +238,7 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.reply = AsyncMock()
         self.update = SimpleNamespace(
             effective_chat=SimpleNamespace(id=123),
+            effective_user=SimpleNamespace(id=123),
             message=SimpleNamespace(reply_text=self.reply),
         )
 
@@ -274,6 +275,35 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         job.schedule_removal.assert_called_once()
         self.assertEqual(self.scheduler.jobs, {})
         self.reply.assert_awaited_once_with("🗑️ Silindi:\n• Silinecek")
+
+    async def test_other_user_in_allowed_chat_is_ignored_by_all_handlers(self):
+        self.update.effective_user.id = 456
+        with patch.object(self.main, "parse_with_openrouter") as parse:
+            await self.main.start(self.update, self.context)
+            await self.main.handle_user_text(self.update, self.context, "Sil")
+            await self.main.handle_voice(self.update, self.context)
+        parse.assert_not_called()
+        self.reply.assert_not_awaited()
+
+    async def test_allowed_user_in_other_chat_is_ignored_by_all_handlers(self):
+        self.update.effective_chat.id = 456
+        with patch.object(self.main, "parse_with_openrouter") as parse:
+            await self.main.start(self.update, self.context)
+            await self.main.handle_user_text(self.update, self.context, "Sil")
+            await self.main.handle_voice(self.update, self.context)
+        parse.assert_not_called()
+        self.reply.assert_not_awaited()
+
+    async def test_updates_without_sender_or_chat_are_not_authorized(self):
+        self.update.effective_user = None
+        self.assertFalse(self.main.is_authorized(self.update))
+        self.update.effective_user = SimpleNamespace(id=123)
+        self.update.effective_chat = None
+        self.assertFalse(self.main.is_authorized(self.update))
+
+    async def test_owner_can_use_start(self):
+        await self.main.start(self.update, self.context)
+        self.reply.assert_awaited_once()
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ RADICALE_USER = os.getenv("RADICALE_USER", "vatanemre123")
 RADICALE_PASS = os.getenv("RADICALE_PASS")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
+TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", str(TELEGRAM_CHAT_ID)))
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -65,6 +66,17 @@ def get_calendar():
 
 
 reminder_scheduler = ReminderScheduler(get_calendar, TZ, TELEGRAM_CHAT_ID)
+
+
+def is_authorized(update: Update) -> bool:
+    chat = update.effective_chat
+    user = update.effective_user
+    return (
+        chat is not None
+        and user is not None
+        and chat.id == TELEGRAM_CHAT_ID
+        and user.id == TELEGRAM_USER_ID
+    )
 
 
 def save_calendar_event(title, description, start, all_day):
@@ -183,8 +195,7 @@ def delete_event_by_title(title: str):
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if str(chat_id) != str(TELEGRAM_CHAT_ID):
+    if not is_authorized(update):
         return
 
     try:
@@ -227,9 +238,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
-    chat_id = update.effective_chat.id
-
-    if str(chat_id) != str(TELEGRAM_CHAT_ID):
+    if not is_authorized(update):
         return
 
     try:
@@ -344,6 +353,8 @@ async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, u
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return
     await update.message.reply_text(
         "Merhaba! 👋\n\n"
         "Bana doğal dille yaz veya sesli mesaj gönder, anlarım:\n"
