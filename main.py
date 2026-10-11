@@ -148,8 +148,10 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         text=f"⏰ Hatırlatma: {title}",
     )
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await handle_user_text(update, context, update.message.text)
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if str(chat_id) != str(TELEGRAM_CHAT_ID):
         return
@@ -180,9 +182,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         os.remove(file_path)
 
-        update.message.text = transcript
         await update.message.reply_text(f"🎤 Anladım: {transcript}")
-        await handle_message(update, context)
+        await handle_user_text(update, context, transcript)
 
     except Exception as e:
         logger.error(f"Voice error: {e}")
