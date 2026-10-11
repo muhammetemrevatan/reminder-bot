@@ -1,11 +1,12 @@
 import os
+import json
 import logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import caldav
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
-from google import genai
+from openai import OpenAI
 
 load_dotenv()
 
@@ -14,12 +15,15 @@ RADICALE_USER = os.getenv("RADICALE_USER", "vatanemre123")
 RADICALE_PASS = os.getenv("RADICALE_PASS")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+openrouter_client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
 
 
 def get_calendar():
@@ -33,14 +37,24 @@ def get_calendar():
     for cal in calendars:
         if "reminder" in str(cal.url).lower():
             return cal
-    return calendars[0] if calendars else None
+
+    logger.info("Reminder calendar not found, creating new one.")
+    return principal.make_calendar(name="reminder")
 
 
-def parse_with_gemini(message: str):
+def _clean_json(text: str):
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    return json.loads(text)
+
+
+def parse_with_openrouter(message: str):
     today = datetime.now().strftime("%Y-%m-%d %A")
     prompt = f"""
     Bugünün tarihi: {today}
-    
+
     Kullanıcının mesajını analiz et ve şu JSON formatında cevap ver:
     {{
       "action": "add_event" | "list_events" | "chat",
@@ -49,51 +63,58 @@ def parse_with_gemini(message: str):
       "days_ahead": 0 | 1 | 7 (list_events için),
       "reply": "kullanıcıya verilecek doğal cevap"
     }}
-    
+
     Kullanıcının mesajı: "{message}"
     """
-    
-    response = gemini_client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-    )
-    
-    text = response.text.strip()
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-    
-    import json
-    return json.loads(text)
+
+    try:
+        response = openrouter_client.chat.completions.create(
+            model="google/gemini-2.0-flash-exp:free",
+            messages=[{"role": "user", "content": prompt}],
+            timeout=5,
+        )
+        return _clean_json(response.choices[0].message.content.strip())
+    except Exception as e:
+        logger.warning(f"Gemini (OpenRouter) failed: {e}")
+
+    try:
+        response = openrouter_client.chat.completions.create(
+            model="openrouter/free",
+            messages=[{"role": "user", "content": prompt}],
+            timeout=5,
+        )
+        return _clean_json(response.choices[0].message.content.strip())
+    except Exception as e:
+        logger.error(f"Free router failed: {e}")
+
+    return {
+        "action": "chat",
+        "reply": "AI sunucuları cevap vermedi, lütfen tekrar deneyin.",
+    }
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     chat_id = update.effective_chat.id
-    
+
     if str(chat_id) != str(TELEGRAM_CHAT_ID):
         return
-    
+
     try:
-        parsed = parse_with_gemini(user_message)
+        parsed = parse_with_openrouter(user_message)
         action = parsed.get("action")
-        
+
         if action == "add_event":
             title = parsed.get("title", "Hatırlatıcı")
             dt_str = parsed.get("datetime")
-            
+
             if not dt_str:
                 await update.message.reply_text("Tarih/saat anlayamadım. Tekrar yazar mısın?")
                 return
-            
+
             event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
-            
             cal = get_calendar()
-            if not cal:
-                await update.message.reply_text("Takvim bulunamadı.")
-                return
-            
+
             event_ical = f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//TelegramBot//TR
@@ -108,34 +129,30 @@ TRIGGER:-PT0M
 END:VALARM
 END:VEVENT
 END:VCALENDAR"""
-            
+
             cal.save_event(event_ical)
-            
+
             context.job_queue.run_once(
                 send_reminder,
                 when=event_date,
                 data={"title": title, "chat_id": chat_id},
             )
-            
+
             await update.message.reply_text(f"✅ Tamam, {dt_str} için '{title}' hatırlatıcısı oluşturuldu.")
-        
+
         elif action == "list_events":
             days = parsed.get("days_ahead", 7)
-            
             cal = get_calendar()
-            if not cal:
-                await update.message.reply_text("Takvim bulunamadı.")
-                return
-            
+
             start_date = datetime.now()
             end_date = start_date + timedelta(days=days)
-            
+
             events = cal.search(start=start_date, end=end_date, event=True, expand=True)
-            
+
             if not events:
                 await update.message.reply_text(f"Önümüzdeki {days} günde etkinlik yok.")
                 return
-            
+
             msg = f"Önümüzdeki {days} gün:\n\n"
             for ev in events:
                 comp = ev.icalendar_component
@@ -146,13 +163,13 @@ END:VCALENDAR"""
                 else:
                     date_str = dtstart.strftime("%d.%m.%Y")
                 msg += f"• {date_str} — {summary}\n"
-            
+
             await update.message.reply_text(msg)
-        
+
         else:
             reply = parsed.get("reply", "Anlayamadım, tekrar yazar mısın?")
             await update.message.reply_text(reply)
-    
+
     except Exception as e:
         logger.error(f"Error: {e}")
         await update.message.reply_text(f"Bir hata oldu: {e}")
