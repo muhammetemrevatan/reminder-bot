@@ -3,4 +3,3 @@ python-telegram-bot[job-queue]
 python-dotenv
 icalendar
 openai
-sqlalchemy

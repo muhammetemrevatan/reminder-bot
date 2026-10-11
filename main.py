@@ -5,10 +5,18 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import caldav
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    JobQueue,
+    PicklePersistence,
+)
 from openai import OpenAI
 from zoneinfo import ZoneInfo
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+
 TZ = ZoneInfo("Europe/Istanbul")
 
 load_dotenv()
@@ -38,8 +46,11 @@ def get_calendar():
     principal = client.principal()
     calendars = principal.calendars()
     for cal in calendars:
-        if "reminder" in str(cal.url).lower():
-            return cal
+        try:
+            if "reminder" in cal.name.lower():
+                return cal
+        except Exception:
+            continue
 
     logger.info("Reminder calendar not found, creating new one.")
     return principal.make_calendar(name="reminder")
@@ -96,6 +107,16 @@ def parse_with_openrouter(message: str):
     }
 
 
+async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    title = job.data["title"]
+    chat_id = job.data["chat_id"]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"⏰ Hatırlatma: {title}",
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     chat_id = update.effective_chat.id
@@ -115,7 +136,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Tarih/saat anlayamadım. Tekrar yazar mısın?")
                 return
 
-            event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+            event_date = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
             cal = get_calendar()
 
             event_ical = f"""BEGIN:VCALENDAR
@@ -162,6 +183,7 @@ END:VCALENDAR"""
                 header = "Yarınki etkinlikler:\n\n"
             else:
                 header = f"Önümüzdeki {days} günün etkinlikleri:\n\n"
+
             msg = header
             for ev in events:
                 comp = ev.icalendar_component
@@ -184,16 +206,6 @@ END:VCALENDAR"""
         await update.message.reply_text(f"Bir hata oldu: {e}")
 
 
-async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    job = context.job
-    title = job.data["title"]
-    chat_id = job.data["chat_id"]
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"⏰ Hatırlatma: {title}",
-    )
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Merhaba! 👋\n\n"
@@ -205,15 +217,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    persistence = PicklePersistence(filepath="bot_persistence.pkl")
     app = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
+        .persistence(persistence)
         .build()
-    )
-
-    app.job_queue.scheduler.add_jobstore(
-        SQLAlchemyJobStore(url="sqlite:///jobs.sqlite"),
-        alias="default",
     )
 
     app.add_handler(CommandHandler("start", start))
