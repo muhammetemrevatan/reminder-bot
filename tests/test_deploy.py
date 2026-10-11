@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 spec = importlib.util.spec_from_file_location("deploy_script", Path(__file__).resolve().parents[1] / "scripts" / "deploy.py")
 deploy = importlib.util.module_from_spec(spec)
@@ -39,6 +39,7 @@ class DeployTests(unittest.TestCase):
         request = send.call_args.args[0]
         self.assertEqual(request.data, b'{"ref":"refs/heads/main"}')
         self.assertEqual(request.get_header("X-github-event"), "push")
+        self.assertEqual(request.get_header("User-agent"), "ReminderBot-CI/1.0")
 
     def test_cloudflare_html_is_failure_even_with_200(self):
         result, _ = self.run_script(body=b"<title>Sign in Cloudflare Access</title>", content_type="text/html")
@@ -50,6 +51,10 @@ class DeployTests(unittest.TestCase):
 
     def test_network_error_does_not_print_secret(self):
         result, _ = self.run_script(error=URLError("https://example.com/api/deploy/test-secret"))
+        self.assertEqual(result, 1)
+
+    def test_http_error_does_not_print_secret(self):
+        result, _ = self.run_script(error=HTTPError("https://example.com/api/deploy/test-secret", 403, "Forbidden", {}, None))
         self.assertEqual(result, 1)
 
     def test_newer_commit_skips_old_run(self):

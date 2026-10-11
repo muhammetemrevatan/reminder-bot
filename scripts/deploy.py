@@ -3,6 +3,7 @@ import os
 import json
 import sys
 import subprocess
+import ssl
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -31,6 +32,7 @@ def main():
         return 0
     request = Request(url, data=Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes(), headers={
         "Content-Type": "application/json", "X-GitHub-Event": "push",
+        "User-Agent": "ReminderBot-CI/1.0",
     }, method="POST")
     try:
         with urlopen(request, timeout=60) as response:
@@ -45,8 +47,15 @@ def main():
             if not accepted:
                 print("::error::Dokploy did not confirm that the deployment was queued.")
                 return 1
-    except (HTTPError, URLError, TimeoutError):
-        # Do not print exceptions: they may contain the secret webhook URL.
+    except HTTPError as error:
+        print(f"::error::The deployment webhook returned HTTP {error.code}. Check Cloudflare and Dokploy.")
+        return 1
+    except URLError as error:
+        # Print only a fixed category; exception text can contain the secret URL.
+        reason = "TLS certificate verification failed" if isinstance(error.reason, ssl.SSLCertVerificationError) else "network connection failed"
+        print(f"::error::The deployment webhook {reason}.")
+        return 1
+    except TimeoutError:
         print("::error::The deployment webhook request failed.")
         return 1
     print("Deployment request accepted. Check Dokploy for build and runtime status.")
