@@ -37,8 +37,11 @@ def get_calendar():
     principal = client.principal()
     calendars = principal.calendars()
     for cal in calendars:
-        if "reminder" in str(cal.url).lower():
-            return cal
+        try:
+            if "reminder" in cal.name.lower():
+                return cal
+        except Exception:
+            continue
 
     logger.info("Reminder calendar not found, creating new one.")
     return principal.make_calendar(name="reminder")
