@@ -17,7 +17,6 @@ from telegram.ext import (
 from openai import OpenAI
 from zoneinfo import ZoneInfo
 from google import genai
-from google.genai import types
 
 TZ = ZoneInfo("Europe/Istanbul")
 
@@ -148,10 +147,8 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         text=f"⏰ Hatırlatma: {title}",
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await handle_user_text(update, context, update.message.text)
 
-async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if str(chat_id) != str(TELEGRAM_CHAT_ID):
         return
@@ -191,7 +188,10 @@ async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
+    await handle_user_text(update, context, update.message.text)
+
+
+async def handle_user_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user_message: str):
     chat_id = update.effective_chat.id
 
     if str(chat_id) != str(TELEGRAM_CHAT_ID):
