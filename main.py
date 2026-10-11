@@ -7,6 +7,8 @@ import caldav
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
 from openai import OpenAI
+from zoneinfo import ZoneInfo
+TZ = ZoneInfo("Europe/Istanbul")
 
 load_dotenv()
 
@@ -51,7 +53,7 @@ def _clean_json(text: str):
 
 
 def parse_with_openrouter(message: str):
-    now = datetime.now().strftime("%Y-%m-%d %A %H:%M")
+    now = datetime.now(TZ).strftime("%Y-%m-%d %A %H:%M")
     prompt = f"""
     Şu anki tarih ve saat: {now}
 
@@ -144,7 +146,7 @@ END:VCALENDAR"""
             days = parsed.get("days_ahead", 7)
             cal = get_calendar()
 
-            start_date = datetime.now()
+            start_date = datetime.now(TZ)
             end_date = start_date + timedelta(days=days)
 
             events = cal.search(start=start_date, end=end_date, event=True, expand=True)
