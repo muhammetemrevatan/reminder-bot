@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, JobQueue
 from openai import OpenAI
 from zoneinfo import ZoneInfo
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 TZ = ZoneInfo("Europe/Istanbul")
 
 load_dotenv()
@@ -204,7 +205,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .build()
+    )
+
+    app.job_queue.scheduler.add_jobstore(
+        SQLAlchemyJobStore(url="sqlite:///jobs.sqlite"),
+        alias="default",
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started.")
